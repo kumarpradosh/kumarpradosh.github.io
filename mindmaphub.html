@@ -136,6 +136,7 @@
         document.addEventListener('DOMContentLoaded', async () => {
 
             // --- Firebase Initialization and Auth ---
+            console.log("DOM content loaded. Initializing Firebase.");
             const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
             const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
             const app = window.initializeApp(firebaseConfig);
@@ -145,16 +146,19 @@
             const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
             if (initialAuthToken) {
+                console.log("Signing in with custom token...");
                 await window.signInWithCustomToken(auth, initialAuthToken);
             } else {
+                console.log("Signing in anonymously...");
                 await window.signInAnonymously(auth);
             }
             
-            // Get userId after sign-in is complete
+            // Get userId and set up listeners only after sign-in is complete
             window.onAuthStateChanged(auth, async (user) => {
                 if (user) {
                     userId = user.uid;
                     document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
+                    console.log(`User signed in with ID: ${userId}`);
                     
                     // Check for standalone view and load content
                     const mindmapIdFromUrl = new URLSearchParams(window.location.search).get('id');
@@ -163,8 +167,10 @@
                         await loadStandaloneMindmap(mindmapIdFromUrl);
                     } else {
                         // --- Real-time data listener for owner view ---
+                        console.log("Setting up real-time data listener for mindmaps.");
                         const mindmapsRef = window.collection(db, `artifacts/${appId}/users/${userId}/mindmaps`);
                         window.onSnapshot(mindmapsRef, (snapshot) => {
+                            console.log(`Received snapshot with ${snapshot.docs.length} mindmaps.`);
                             const newMindmapData = {};
                             snapshot.docs.forEach(doc => {
                                 newMindmapData[doc.id] = { id: doc.id, ...doc.data() };
@@ -172,17 +178,20 @@
                             mindmapData = newMindmapData;
                             renderMindmapList();
                             lucide.createIcons();
+                            renderCategoryDropdown();
                         });
                     }
                 } else {
-                    console.log("No user is signed in.");
-                    // For public view, we can sign in anonymously as well.
+                    console.log("No user is signed in. Handling public view if applicable.");
                     const mindmapIdFromUrl = new URLSearchParams(window.location.search).get('id');
                     if(mindmapIdFromUrl) {
                         isStandaloneView = true;
                         // For a public view, the user doesn't need to be the owner
                         userId = 'public_user'; 
                         await loadStandaloneMindmap(mindmapIdFromUrl);
+                    } else {
+                         // If no user and not a standalone view, just show the upload prompt.
+                         document.getElementById('mindmap-list').innerHTML = `<p class="text-sm text-brand-primary/60 text-center">Please sign in to see your mindmaps.</p>`;
                     }
                 }
             });
@@ -252,6 +261,7 @@
 
             // --- Standalone Mindmap View Logic ---
             async function loadStandaloneMindmap(mindmapId) {
+                console.log(`Loading standalone mindmap with ID: ${mindmapId}`);
                 try {
                     document.getElementById('upload-info').classList.add('hidden');
                     document.getElementById('categorization-form').classList.add('hidden');
@@ -279,6 +289,7 @@
 
             // --- Centralized function to select a mindmap and update the UI ---
             function selectMindmap(mindmap) {
+                console.log(`Selecting mindmap: ${mindmap.name}`);
                 // Update main display area
                 mainImage.src = mindmap.image;
                 mainImage.alt = mindmap.name;
@@ -293,7 +304,10 @@
                 // Update active link in sidebar (only if not standalone)
                 if (!isStandaloneView) {
                     document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-                    document.getElementById(mindmap.id).classList.add('active');
+                    const link = document.getElementById(mindmap.id);
+                    if (link) {
+                        link.classList.add('active');
+                    }
                 }
 
                 // Update Gemini content
@@ -833,7 +847,6 @@
             }
 
             // Initial UI setup
-            renderCategoryDropdown();
             lucide.createIcons();
         });
     </script>
