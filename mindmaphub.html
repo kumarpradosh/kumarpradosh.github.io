@@ -11,7 +11,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, addDoc, deleteDoc, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot, collection, addDoc, deleteDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // Global variables for Firebase access
         window.initializeApp = initializeApp;
@@ -28,7 +28,6 @@
         window.collection = collection;
         window.addDoc = addDoc;
         window.deleteDoc = deleteDoc;
-        window.getDocs = getDocs;
     </script>
     
     <style>
@@ -91,19 +90,16 @@
             background-color: #1E2A4F;
             color: #FFFFFF; /* brand-light */
         }
-        
-        .list-item {
-            display: list-item;
-            list-style-type: disc;
-            list-style-position: inside;
-            padding-left: 1rem;
-        }
-
-        .list-container {
-            padding-left: 1rem;
-        }
     </style>
     <script>
+        // Global error handler to catch any unhandled exceptions
+        window.onerror = function (message, source, lineno, colno, error) {
+            console.error("Global uncaught error:", error);
+            const errorMessage = document.getElementById('error-message');
+            errorMessage.textContent = `An unexpected error occurred: ${message}. Check the console for details.`;
+            document.getElementById('error-modal').classList.remove('hidden');
+        };
+
         // Tailwind CSS configuration for custom brand colors and font
         tailwind.config = {
             theme: {
@@ -134,720 +130,680 @@
         let isStandaloneView = false;
         
         document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                // --- Firebase Initialization and Auth ---
+                console.log("DOM content loaded. Initializing Firebase.");
+                const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
+                const app = window.initializeApp(firebaseConfig);
+                auth = window.getAuth(app);
+                db = window.getFirestore(app);
 
-            // --- Firebase Initialization and Auth ---
-            console.log("DOM content loaded. Initializing Firebase.");
-            const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-            const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-            const app = window.initializeApp(firebaseConfig);
-            auth = window.getAuth(app);
-            db = window.getFirestore(app);
+                const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
 
-            const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-            if (initialAuthToken) {
-                console.log("Signing in with custom token...");
-                await window.signInWithCustomToken(auth, initialAuthToken);
-            } else {
-                console.log("Signing in anonymously...");
-                await window.signInAnonymously(auth);
-            }
-            
-            // Get userId and set up listeners only after sign-in is complete
-            window.onAuthStateChanged(auth, async (user) => {
-                if (user) {
-                    userId = user.uid;
-                    document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
-                    console.log(`User signed in with ID: ${userId}`);
-                    
-                    // Check for standalone view and load content
-                    const mindmapIdFromUrl = new URLSearchParams(window.location.search).get('id');
-                    if (mindmapIdFromUrl) {
-                        isStandaloneView = true;
-                        await loadStandaloneMindmap(mindmapIdFromUrl);
-                    } else {
-                        // --- Real-time data listener for owner view ---
-                        console.log("Setting up real-time data listener for mindmaps.");
-                        const mindmapsRef = window.collection(db, `artifacts/${appId}/users/${userId}/mindmaps`);
-                        window.onSnapshot(mindmapsRef, (snapshot) => {
-                            console.log(`Received snapshot with ${snapshot.docs.length} mindmaps.`);
-                            const newMindmapData = {};
-                            snapshot.docs.forEach(doc => {
-                                newMindmapData[doc.id] = { id: doc.id, ...doc.data() };
-                            });
-                            mindmapData = newMindmapData;
-                            renderMindmapList();
-                            lucide.createIcons();
-                            renderCategoryDropdown();
-                        });
-                    }
+                if (initialAuthToken) {
+                    console.log("Signing in with custom token...");
+                    await window.signInWithCustomToken(auth, initialAuthToken);
                 } else {
-                    console.log("No user is signed in. Handling public view if applicable.");
-                    const mindmapIdFromUrl = new URLSearchParams(window.location.search).get('id');
-                    if(mindmapIdFromUrl) {
-                        isStandaloneView = true;
-                        // For a public view, the user doesn't need to be the owner
-                        userId = 'public_user'; 
-                        await loadStandaloneMindmap(mindmapIdFromUrl);
-                    } else {
-                         // If no user and not a standalone view, just show the upload prompt.
-                         document.getElementById('mindmap-list').innerHTML = `<p class="text-sm text-brand-primary/60 text-center">Please sign in to see your mindmaps.</p>`;
-                    }
+                    console.log("Signing in anonymously...");
+                    await window.signInAnonymously(auth);
                 }
-            });
-
-            // --- Element References ---
-            const mindmapList = document.getElementById('mindmap-list');
-            const mainImage = document.getElementById('mindmap-image');
-            const mainImageContainer = document.getElementById('mindmap-display');
-            const mindmapTitle = document.getElementById('mindmap-title');
-            const mindmapDescription = document.getElementById('mindmap-description');
-            const mindmapSummarySection = document.getElementById('mindmap-summary-section');
-            const categorizationForm = document.getElementById('categorization-form');
-            const uploadInfo = document.getElementById('upload-info');
-            const categorySelect = document.getElementById('mindmap-category');
-            const newCategoryInputContainer = document.getElementById('new-category-input-container');
-            const createCategoryModal = document.getElementById('create-category-modal');
-            const newCategoryNameInput = document.getElementById('new-category-name-modal');
-            const saveCategoryBtn = document.getElementById('save-new-category');
-            const cancelCategoryBtn = document.getElementById('cancel-new-category');
-            const addSubCategoryModal = document.getElementById('add-sub-category-modal');
-            const newSubCategoryNameInput = document.getElementById('new-sub-category-name-modal');
-            const saveSubCategoryBtn = document.getElementById('save-new-sub-category');
-            const cancelSubCategoryBtn = document.getElementById('cancel-new-sub-category');
-            const getSummaryBtn = document.getElementById('get-summary-btn');
-            const getHacksBtn = document.getElementById('get-hacks-btn');
-            const summaryContentDiv = document.getElementById('gemini-summary-content');
-            const memoryHacksContentDiv = document.getElementById('gemini-memory-hacks-content');
-            const summarySpinner = document.getElementById('summary-spinner');
-            const hacksSpinner = document.getElementById('hacks-spinner');
-            const errorModal = document.getElementById('error-modal');
-            const errorMessage = document.getElementById('error-message');
-            const confirmDeleteModal = document.getElementById('confirm-delete-modal');
-            const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
-            const cancelDeleteBtn = document.getElementById('cancel-delete-btn');
-            const deleteModalText = document.getElementById('delete-modal-text');
-            const sidebar = document.getElementById('sidebar');
-            
-            let mindmapToDeleteId = null;
-
-            // --- UI Modal and State Management ---
-            function showModal(modalElement) { modalElement.classList.remove('hidden'); }
-            function hideModal(modalElement) { modalElement.classList.add('hidden'); }
-
-            saveCategoryBtn.addEventListener('click', () => {
-                const newCategoryName = newCategoryNameInput.value.trim();
-                if (newCategoryName) {
-                    hideModal(createCategoryModal);
-                }
-            });
-
-            cancelCategoryBtn.addEventListener('click', () => {
-                hideModal(createCategoryModal);
-            });
-
-            saveSubCategoryBtn.addEventListener('click', () => {
-                const newSubCategory = newSubCategoryNameInput.value.trim();
-                if (newSubCategory) {
-                    hideModal(addSubCategoryModal);
-                }
-            });
-
-            cancelSubCategoryBtn.addEventListener('click', () => {
-                hideModal(addSubCategoryModal);
-            });
-
-            document.getElementById('error-modal-close-btn').addEventListener('click', () => hideModal(errorModal));
-
-            // --- Standalone Mindmap View Logic ---
-            async function loadStandaloneMindmap(mindmapId) {
-                console.log(`Loading standalone mindmap with ID: ${mindmapId}`);
-                try {
-                    document.getElementById('upload-info').classList.add('hidden');
-                    document.getElementById('categorization-form').classList.add('hidden');
-                    document.getElementById('sidebar').classList.add('hidden');
-                    document.getElementById('main-content-container').classList.remove('md:flex');
-                    document.getElementById('mindmap-summary-section').classList.remove('hidden');
-
-                    const mindmapDocRef = window.doc(db, `artifacts/${appId}/users/${userId}/mindmaps`, mindmapId);
-                    const docSnap = await window.getDoc(mindmapDocRef);
-
-                    if (docSnap.exists()) {
-                        const mindmap = { id: docSnap.id, ...docSnap.data() };
-                        selectMindmap(mindmap); // Reuse the existing function
-                    } else {
-                        errorMessage.textContent = 'Mindmap not found.';
-                        showModal(errorModal);
-                    }
-                } catch (error) {
-                    console.error("Error loading standalone mindmap: ", error);
-                    errorMessage.textContent = 'An error occurred while loading the mindmap.';
-                    showModal(errorModal);
-                }
-            }
-
-
-            // --- Centralized function to select a mindmap and update the UI ---
-            function selectMindmap(mindmap) {
-                console.log(`Selecting mindmap: ${mindmap.name}`);
-                // Update main display area
-                mainImage.src = mindmap.image;
-                mainImage.alt = mindmap.name;
-                mindmapTitle.textContent = mindmap.name;
-                mindmapDescription.textContent = mindmap.description;
-                mindmapSummarySection.classList.remove('hidden');
-                categorizationForm.classList.add('hidden');
-                uploadInfo.classList.add('hidden');
-                mainImageContainer.classList.remove('hidden');
-
-
-                // Update active link in sidebar (only if not standalone)
-                if (!isStandaloneView) {
-                    document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
-                    const link = document.getElementById(mindmap.id);
-                    if (link) {
-                        link.classList.add('active');
-                    }
-                }
-
-                // Update Gemini content
-                summaryContentDiv.innerHTML = mindmap.summary ? mindmap.summary.replace(/\n/g, '<br>') : 'Click "Get Summary" to generate a summary.';
-                memoryHacksContentDiv.innerHTML = mindmap.hacks ? mindmap.hacks.replace(/\n/g, '<br>') : 'Click "Get Memory Hacks" to generate a story.';
-                summaryContentDiv.classList.remove('hidden');
-                memoryHacksContentDiv.classList.add('hidden');
-
-                // Enable Gemini buttons
-                getSummaryBtn.disabled = false;
-                getHacksBtn.disabled = false;
-                getSummaryBtn.innerHTML = `<i data-lucide="sparkles" class="w-5 h-5"></i><span>Get Summary ✨</span>`;
-                getHacksBtn.innerHTML = `<i data-lucide="brain" class="w-5 h-5"></i><span>Get Memory Hacks ✨</span>`;
                 
-                // Set global state
-                currentImageData = mindmap.image.split(',')[1];
-                currentMindmapId = mindmap.id;
-                
-                lucide.createIcons();
-
-                // Show share button only in owner view
-                const shareBtn = document.getElementById('share-mindmap-btn');
-                if (shareBtn) {
-                    if (isStandaloneView) {
-                        shareBtn.classList.add('hidden');
-                    } else {
-                        shareBtn.classList.remove('hidden');
-                    }
-                }
-            }
-
-            // --- Sidebar Navigation Logic ---
-            function renderMindmapList() {
-                mindmapList.innerHTML = '';
-                if (Object.keys(mindmapData).length === 0) {
-                     mindmapList.innerHTML = `<p class="text-sm text-brand-primary/60 text-center">No mindmaps yet. Upload one!</p>`;
-                     return;
-                }
-                const categories = {};
-
-                // Group mindmaps by category
-                Object.values(mindmapData).forEach(mindmap => {
-                    const categoryPath = mindmap.category.split('/');
-                    let currentLevel = categories;
-                    for (let i = 0; i < categoryPath.length; i++) {
-                        const part = categoryPath[i];
-                        if (!currentLevel[part]) {
-                            currentLevel[part] = { mindmaps: [], subCategories: {} };
-                        }
-                        if (i === categoryPath.length - 1) {
-                            currentLevel[part].mindmaps.push(mindmap);
+                // Get userId and set up listeners only after sign-in is complete
+                window.onAuthStateChanged(auth, async (user) => {
+                    if (user) {
+                        userId = user.uid;
+                        document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
+                        console.log(`User signed in with ID: ${userId}`);
+                        
+                        const mindmapIdFromUrl = new URLSearchParams(window.location.search).get('id');
+                        if (mindmapIdFromUrl) {
+                            isStandaloneView = true;
+                            await loadStandaloneMindmap(mindmapIdFromUrl);
                         } else {
-                            currentLevel = currentLevel[part].subCategories;
+                            // --- Real-time data listener for owner view ---
+                            console.log("Setting up real-time data listener for mindmaps.");
+                            const mindmapsRef = window.collection(db, `artifacts/${appId}/users/${userId}/mindmaps`);
+                            window.onSnapshot(mindmapsRef, (snapshot) => {
+                                console.log(`Received snapshot with ${snapshot.docs.length} mindmaps.`);
+                                const newMindmapData = {};
+                                snapshot.docs.forEach(doc => {
+                                    newMindmapData[doc.id] = { id: doc.id, ...doc.data() };
+                                });
+                                mindmapData = newMindmapData;
+                                renderMindmapList();
+                                lucide.createIcons();
+                                renderCategoryDropdown();
+                            }, (error) => {
+                                console.error("Error with onSnapshot listener:", error);
+                                showModal("error-modal", `Failed to load mindmaps: ${error.message}`);
+                            });
+                        }
+                    } else {
+                        console.log("No user is signed in. Handling public view if applicable.");
+                        const mindmapIdFromUrl = new URLSearchParams(window.location.search).get('id');
+                        if (mindmapIdFromUrl) {
+                            isStandaloneView = true;
+                            userId = 'public_user'; 
+                            await loadStandaloneMindmap(mindmapIdFromUrl);
+                        } else {
+                            document.getElementById('mindmap-list').innerHTML = `<p class="text-sm text-brand-primary/60 text-center">Please sign in to see your mindmaps.</p>`;
                         }
                     }
                 });
 
-                function renderCategories(subCategories, parentElement) {
-                    for (const categoryName in subCategories) {
-                        const categoryDiv = document.createElement('div');
-                        categoryDiv.className = 'flex justify-between items-center group';
-                        categoryDiv.innerHTML = `
-                            <div class="cursor-pointer p-2 flex-grow flex justify-between items-center hover:bg-brand-background/50 rounded-lg">
-                                <span class="font-semibold">${categoryName}</span>
-                                <i data-lucide="chevron-down" class="w-4 h-4 transition-transform duration-200"></i>
-                            </div>
-                        `;
-                        parentElement.appendChild(categoryDiv);
+                // --- Element References ---
+                const mindmapList = document.getElementById('mindmap-list');
+                const mainImage = document.getElementById('mindmap-image');
+                const mainImageContainer = document.getElementById('mindmap-display');
+                const mindmapTitle = document.getElementById('mindmap-title');
+                const mindmapDescription = document.getElementById('mindmap-description');
+                const mindmapSummarySection = document.getElementById('mindmap-summary-section');
+                const categorizationForm = document.getElementById('categorization-form');
+                const uploadInfo = document.getElementById('upload-info');
+                const categorySelect = document.getElementById('mindmap-category');
+                const newCategoryInputContainer = document.getElementById('new-category-input-container');
+                const createCategoryModal = document.getElementById('create-category-modal');
+                const newCategoryNameInput = document.getElementById('new-category-name-modal');
+                const saveCategoryBtn = document.getElementById('save-new-category');
+                const cancelCategoryBtn = document.getElementById('cancel-new-category');
+                const getSummaryBtn = document.getElementById('get-summary-btn');
+                const getHacksBtn = document.getElementById('get-hacks-btn');
+                const summaryContentDiv = document.getElementById('gemini-summary-content');
+                const memoryHacksContentDiv = document.getElementById('gemini-memory-hacks-content');
+                const summarySpinner = document.getElementById('summary-spinner');
+                const hacksSpinner = document.getElementById('hacks-spinner');
+                const errorModal = document.getElementById('error-modal');
+                const errorMessage = document.getElementById('error-message');
+                const confirmDeleteModal = document.getElementById('confirm-delete-modal');
+                const confirmDeleteBtn = document.getElementById('confirm-delete-btn');
+                const cancelDeleteBtn = document.getElementById('cancel-delete-btn');
+                const deleteModalText = document.getElementById('delete-modal-text');
+                
+                let mindmapToDeleteId = null;
 
-                        const ul = document.createElement('ul');
-                        ul.className = 'list-none pl-4 space-y-1';
-
-                        subCategories[categoryName].mindmaps.forEach(mindmap => {
-                            const li = document.createElement('li');
-                            const link = document.createElement('a');
-                            link.href = '#';
-                            link.id = mindmap.id;
-                            link.className = 'nav-link flex justify-between items-center group/item block p-2 text-sm text-brand-primary/80 hover:bg-brand-accent/20 rounded-lg transition-colors';
-                            link.innerHTML = `
-                                <span>${mindmap.name}</span>
-                                <button class="delete-btn hidden group-hover/item:block p-1 text-red-500 hover:text-red-700 rounded-lg" data-id="${mindmap.id}">
-                                    <i data-lucide="trash-2" class="w-4 h-4"></i>
-                                </button>
-                            `;
-
-                            link.addEventListener('click', (e) => {
-                                e.preventDefault();
-                                if (e.target.closest('.delete-btn')) {
-                                    return; // Don't trigger link logic if delete button is clicked
-                                }
-                                selectMindmap(mindmap);
-                            });
-
-                            li.appendChild(link);
-                            ul.appendChild(li);
-                        });
-
-                        if (Object.keys(subCategories[categoryName].subCategories).length > 0) {
-                             renderCategories(subCategories[categoryName].subCategories, ul);
+                // --- UI Modal and State Management ---
+                function showModal(modalId, message = null) { 
+                    const modalElement = document.getElementById(modalId);
+                    if (modalElement) {
+                        modalElement.classList.remove('hidden');
+                        if (message && modalId === 'error-modal') {
+                            document.getElementById('error-message').textContent = message;
                         }
-                        
-                        parentElement.appendChild(ul);
-                        
-                        categoryDiv.querySelector('div').addEventListener('click', () => {
-                            ul.classList.toggle('hidden');
-                            categoryDiv.querySelector('i').classList.toggle('rotate-180');
-                        });
+                    }
+                }
+                function hideModal(modalId) { 
+                    const modalElement = document.getElementById(modalId);
+                    if (modalElement) {
+                        modalElement.classList.add('hidden');
                     }
                 }
 
-                renderCategories(categories, mindmapList);
-                
-                // Add event listeners for delete buttons
-                mindmapList.querySelectorAll('.delete-btn').forEach(button => {
-                    button.addEventListener('click', (e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        mindmapToDeleteId = button.dataset.id;
-                        const mindmapName = mindmapData[mindmapToDeleteId].name;
-                        deleteModalText.textContent = `Are you sure you want to delete the mindmap titled "${mindmapName}"? This action cannot be undone.`;
-                        showModal(confirmDeleteModal);
-                    });
+                saveCategoryBtn.addEventListener('click', () => {
+                    const newCategoryName = newCategoryNameInput.value.trim();
+                    if (newCategoryName) {
+                        hideModal('create-category-modal');
+                        // Update dropdown after creating new category
+                        renderCategoryDropdown(newCategoryName);
+                    } else {
+                        showModal("error-modal", "Please enter a category name.");
+                    }
                 });
-            }
 
-            confirmDeleteBtn.addEventListener('click', async () => {
-                if (mindmapToDeleteId) {
+                cancelCategoryBtn.addEventListener('click', () => {
+                    hideModal('create-category-modal');
+                });
+
+                document.getElementById('error-modal-close-btn').addEventListener('click', () => hideModal('error-modal'));
+
+                // --- Standalone Mindmap View Logic ---
+                async function loadStandaloneMindmap(mindmapId) {
+                    console.log(`Loading standalone mindmap with ID: ${mindmapId}`);
                     try {
-                        if (!db || !userId) {
-                            throw new Error("Firebase not initialized or user not logged in.");
-                        }
-                        const mindmapDocRef = window.doc(db, `artifacts/${appId}/users/${userId}/mindmaps`, mindmapToDeleteId);
-                        await window.deleteDoc(mindmapDocRef);
-                        console.log('Document successfully deleted!');
-                        if (currentMindmapId === mindmapToDeleteId) {
-                            // Clear the main view if the deleted mindmap was being displayed
-                            mainImageContainer.classList.add('hidden');
-                            uploadInfo.classList.remove('hidden');
-                            categorizationForm.classList.add('hidden');
-                            mindmapSummarySection.classList.add('hidden');
-                            currentMindmapId = null;
+                        document.getElementById('upload-info').classList.add('hidden');
+                        document.getElementById('categorization-form').classList.add('hidden');
+                        document.getElementById('sidebar').classList.add('hidden');
+                        document.getElementById('main-content-container').classList.remove('md:flex');
+                        document.getElementById('mindmap-summary-section').classList.remove('hidden');
+
+                        const mindmapDocRef = window.doc(db, `artifacts/${appId}/users/${userId}/mindmaps`, mindmapId);
+                        const docSnap = await window.getDoc(mindmapDocRef);
+
+                        if (docSnap.exists()) {
+                            const mindmap = { id: docSnap.id, ...docSnap.data() };
+                            selectMindmap(mindmap);
+                        } else {
+                            showModal('error-modal', 'Mindmap not found.');
                         }
                     } catch (error) {
-                        console.error('Error removing document: ', error);
-                        errorMessage.textContent = 'Error deleting mindmap. Please try again.';
-                        showModal(errorModal);
+                        console.error("Error loading standalone mindmap: ", error);
+                        showModal('error-modal', 'An error occurred while loading the mindmap.');
                     }
                 }
-                hideModal(confirmDeleteModal);
-            });
-            
-            cancelDeleteBtn.addEventListener('click', () => {
-                hideModal(confirmDeleteModal);
-                mindmapToDeleteId = null;
-            });
 
 
-            function renderCategoryDropdown() {
-                const categories = new Set();
-                Object.values(mindmapData).forEach(mindmap => {
-                    const categoryPath = mindmap.category.split('/');
-                    for(let i = 0; i < categoryPath.length; i++) {
-                         let path = categoryPath.slice(0, i + 1).join('/');
-                         categories.add(path);
-                    }
-                });
-
-                const sortedCategories = Array.from(categories).sort();
-                
-                // Clear existing options
-                categorySelect.innerHTML = `<option value="" disabled selected>Select a category</option>`;
-
-                sortedCategories.forEach(cat => {
-                    const option = document.createElement('option');
-                    option.value = cat;
-                    option.textContent = cat;
-                    categorySelect.appendChild(option);
-                });
-
-                const newOption = document.createElement('option');
-                newOption.value = 'new-category';
-                newOption.textContent = 'Add New Category...';
-                categorySelect.appendChild(newOption);
-            }
-            
-            // Add New Category button logic
-            document.getElementById('add-new-category-btn').addEventListener('click', () => {
-                showModal(createCategoryModal);
-                newCategoryNameInput.value = '';
-            });
-
-            // Handle dropdown change event to show/hide new category input
-            categorySelect.addEventListener('change', (e) => {
-                if (e.target.value === 'new-category') {
-                    newCategoryInputContainer.classList.remove('hidden');
-                } else {
-                    newCategoryInputContainer.classList.add('hidden');
-                }
-            });
-
-            // --- File Upload Logic ---
-            const uploadBox = document.getElementById('upload-box');
-            const fileInput = document.getElementById('file-input');
-
-            uploadBox.addEventListener('dragover', (e) => {
-                e.preventDefault();
-                uploadBox.classList.add('border-brand-accent', 'scale-105');
-            });
-
-            uploadBox.addEventListener('dragleave', () => {
-                uploadBox.classList.remove('border-brand-accent', 'scale-105');
-            });
-
-            uploadBox.addEventListener('drop', (e) => {
-                e.preventDefault();
-                uploadBox.classList.remove('border-brand-accent', 'scale-105');
-                const files = e.dataTransfer.files;
-                if (files.length > 0) {
-                    handleFile(files[0]);
-                }
-            });
-
-            fileInput.addEventListener('change', (e) => {
-                if (e.target.files.length > 0) {
-                    handleFile(e.target.files[0]);
-                }
-            });
-
-            function handleFile(file) {
-                if (file.type.startsWith('image/')) {
-                    const reader = new FileReader();
-                    reader.onload = (e) => {
-                        mainImage.src = e.target.result;
-                        mainImage.alt = file.name;
-                        mainImageContainer.classList.remove('hidden');
-                        uploadInfo.classList.add('hidden');
-                        categorizationForm.classList.remove('hidden');
-                        mindmapSummarySection.classList.add('hidden');
-                        
-                        currentImageData = e.target.result.split(',')[1];
-                        currentMindmapId = null;
-
-                        document.getElementById('mindmap-form').reset();
-                        mindmapTitle.textContent = 'Mindmap Preview';
-                        mindmapDescription.textContent = 'Add details below and save this mindmap.';
-                        summaryContentDiv.innerHTML = '';
-                        memoryHacksContentDiv.innerHTML = '';
-                        summaryContentDiv.classList.remove('hidden');
-                        memoryHacksContentDiv.classList.add('hidden');
-                        
-                        // Disable buttons until saved and selected
-                        getSummaryBtn.disabled = true;
-                        getHacksBtn.disabled = true;
-                        
-                        // Hide share button
-                        const shareBtn = document.getElementById('share-mindmap-btn');
-                        if (shareBtn) shareBtn.classList.add('hidden');
-
-                        lucide.createIcons();
-                        renderCategoryDropdown();
-                    };
-                    reader.readAsDataURL(file);
-                } else {
-                    errorMessage.textContent = 'Please upload an image file (PNG, JPG, or JPEG).';
-                    showModal(errorModal);
-                }
-            }
-
-            // Handle form submission (save to Firebase)
-            const mindmapForm = document.getElementById('mindmap-form');
-            mindmapForm.addEventListener('submit', async (e) => {
-                e.preventDefault();
-                const mindmapName = document.getElementById('mindmap-name').value;
-                let mindmapCategoryPath = categorySelect.value;
-                const newCategoryName = document.getElementById('new-category-name').value;
-                const mindmapImageSrc = mainImage.src;
-                const mindmapDescriptionText = document.getElementById('mindmap-notes').value;
-
-                if (mindmapCategoryPath === 'new-category' && newCategoryName) {
-                    mindmapCategoryPath = newCategoryName;
-                } else if (!mindmapCategoryPath) {
-                    errorMessage.textContent = 'Please select or create a category before saving.';
-                    showModal(errorModal);
-                    return;
-                }
-                
-                if (!db || !userId) {
-                    errorMessage.textContent = 'Database not initialized or user not logged in.';
-                    showModal(errorModal);
-                    return;
-                }
-
-                try {
-                    const newMindmapData = {
-                        name: mindmapName,
-                        category: mindmapCategoryPath,
-                        description: mindmapDescriptionText,
-                        image: mindmapImageSrc,
-                        summary: '',
-                        hacks: '',
-                        createdAt: new Date().toISOString()
-                    };
-                    const mindmapsRef = window.collection(db, `artifacts/${appId}/users/${userId}/mindmaps`);
-                    const docRef = await window.addDoc(mindmapsRef, newMindmapData);
-                    
-                    console.log(`Mindmap "${mindmapName}" saved with ID: `, docRef.id);
-                    
-                    categorizationForm.classList.add('hidden');
+                // --- Centralized function to select a mindmap and update the UI ---
+                function selectMindmap(mindmap) {
+                    console.log(`Selecting mindmap: ${mindmap.name}`);
+                    mainImage.src = mindmap.image;
+                    mainImage.alt = mindmap.name;
+                    mindmapTitle.textContent = mindmap.name;
+                    mindmapDescription.textContent = mindmap.description;
                     mindmapSummarySection.classList.remove('hidden');
+                    categorizationForm.classList.add('hidden');
+                    uploadInfo.classList.add('hidden');
+                    mainImageContainer.classList.remove('hidden');
+
+                    if (!isStandaloneView) {
+                        document.querySelectorAll('.nav-link').forEach(l => l.classList.remove('active'));
+                        const link = document.getElementById(mindmap.id);
+                        if (link) {
+                            link.classList.add('active');
+                        }
+                    }
+
+                    summaryContentDiv.innerHTML = mindmap.summary ? mindmap.summary.replace(/\n/g, '<br>') : 'Click "Get Summary" to generate a summary.';
+                    memoryHacksContentDiv.innerHTML = mindmap.hacks ? mindmap.hacks.replace(/\n/g, '<br>') : 'Click "Get Memory Hacks" to generate a story.';
+                    summaryContentDiv.classList.remove('hidden');
+                    memoryHacksContentDiv.classList.add('hidden');
+
+                    getSummaryBtn.disabled = false;
+                    getHacksBtn.disabled = false;
+                    getSummaryBtn.innerHTML = `<i data-lucide="sparkles" class="w-5 h-5"></i><span>Get Summary ✨</span>`;
+                    getHacksBtn.innerHTML = `<i data-lucide="brain" class="w-5 h-5"></i><span>Get Memory Hacks ✨</span>`;
                     
-                    // The onSnapshot listener will automatically re-render the list and we can then select the new mindmap
-                    const newMindmap = { id: docRef.id, ...newMindmapData };
-                    selectMindmap(newMindmap);
+                    currentImageData = mindmap.image.split(',')[1];
+                    currentMindmapId = mindmap.id;
                     
-                } catch (error) {
-                    console.error("Error saving document: ", error);
-                    errorMessage.textContent = 'An error occurred while saving the mindmap.';
-                    showModal(errorModal);
-                }
-            });
+                    lucide.createIcons();
 
-            // --- Gemini API call for Image Understanding (Summarization) ---
-            async function getMindmapSummary() {
-                 if (!currentImageData || !currentMindmapId) {
-                    errorMessage.textContent = "Please select a mindmap from the left sidebar or upload and save a new one to get a summary.";
-                    showModal(errorModal);
-                    return;
+                    const shareBtn = document.getElementById('share-mindmap-btn');
+                    if (shareBtn) {
+                        if (isStandaloneView) {
+                            shareBtn.classList.add('hidden');
+                        } else {
+                            shareBtn.classList.remove('hidden');
+                        }
+                    }
                 }
 
-                // Loading state
-                summaryContentDiv.innerHTML = '';
-                summarySpinner.classList.remove('hidden');
-                getSummaryBtn.disabled = true;
-                getSummaryBtn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i><span>Loading...</span>`;
-                memoryHacksContentDiv.classList.add('hidden');
-                lucide.createIcons();
+                // --- Sidebar Navigation Logic ---
+                function renderMindmapList() {
+                    mindmapList.innerHTML = '';
+                    if (Object.keys(mindmapData).length === 0) {
+                        mindmapList.innerHTML = `<p class="text-sm text-brand-primary/60 text-center">No mindmaps yet. Upload one!</p>`;
+                        return;
+                    }
+                    const categories = {};
+                    Object.values(mindmapData).forEach(mindmap => {
+                        const categoryPath = mindmap.category.split('/');
+                        let currentLevel = categories;
+                        for (let i = 0; i < categoryPath.length; i++) {
+                            const part = categoryPath[i];
+                            if (!currentLevel[part]) {
+                                currentLevel[part] = { mindmaps: [], subCategories: {} };
+                            }
+                            if (i === categoryPath.length - 1) {
+                                currentLevel[part].mindmaps.push(mindmap);
+                            } else {
+                                currentLevel = currentLevel[part].subCategories;
+                            }
+                        }
+                    });
 
-                const prompt = "Analyze this mindmap. Identify the main topic and summarize the key concepts and their relationships in a clear, concise paragraph. Focus on the main ideas and don't get lost in minor details. Return the summary as plain text.";
+                    function renderCategories(subCategories, parentElement) {
+                        for (const categoryName in subCategories) {
+                            const categoryDiv = document.createElement('div');
+                            categoryDiv.className = 'flex justify-between items-center group';
+                            categoryDiv.innerHTML = `
+                                <div class="cursor-pointer p-2 flex-grow flex justify-between items-center hover:bg-brand-background/50 rounded-lg">
+                                    <span class="font-semibold">${categoryName}</span>
+                                    <i data-lucide="chevron-down" class="w-4 h-4 transition-transform duration-200"></i>
+                                </div>
+                            `;
+                            parentElement.appendChild(categoryDiv);
 
-                let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
-                const payload = {
-                    contents: [
-                        {
+                            const ul = document.createElement('ul');
+                            ul.className = 'list-none pl-4 space-y-1';
+
+                            subCategories[categoryName].mindmaps.forEach(mindmap => {
+                                const li = document.createElement('li');
+                                const link = document.createElement('a');
+                                link.href = '#';
+                                link.id = mindmap.id;
+                                link.className = 'nav-link flex justify-between items-center group/item block p-2 text-sm text-brand-primary/80 hover:bg-brand-accent/20 rounded-lg transition-colors';
+                                link.innerHTML = `
+                                    <span>${mindmap.name}</span>
+                                    <button class="delete-btn hidden group-hover/item:block p-1 text-red-500 hover:text-red-700 rounded-lg" data-id="${mindmap.id}">
+                                        <i data-lucide="trash-2" class="w-4 h-4"></i>
+                                    </button>
+                                `;
+
+                                link.addEventListener('click', (e) => {
+                                    e.preventDefault();
+                                    if (e.target.closest('.delete-btn')) {
+                                        return;
+                                    }
+                                    selectMindmap(mindmap);
+                                });
+
+                                li.appendChild(link);
+                                ul.appendChild(li);
+                            });
+
+                            if (Object.keys(subCategories[categoryName].subCategories).length > 0) {
+                                renderCategories(subCategories[categoryName].subCategories, ul);
+                            }
+                            
+                            parentElement.appendChild(ul);
+                            
+                            categoryDiv.querySelector('div').addEventListener('click', () => {
+                                ul.classList.toggle('hidden');
+                                categoryDiv.querySelector('i').classList.toggle('rotate-180');
+                            });
+                        }
+                    }
+                    renderCategories(categories, mindmapList);
+                    
+                    mindmapList.querySelectorAll('.delete-btn').forEach(button => {
+                        button.addEventListener('click', (e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            mindmapToDeleteId = button.dataset.id;
+                            const mindmapName = mindmapData[mindmapToDeleteId].name;
+                            deleteModalText.textContent = `Are you sure you want to delete the mindmap titled "${mindmapName}"? This action cannot be undone.`;
+                            showModal('confirm-delete-modal');
+                        });
+                    });
+                }
+
+                confirmDeleteBtn.addEventListener('click', async () => {
+                    if (mindmapToDeleteId) {
+                        try {
+                            if (!db || !userId) { throw new Error("Firebase not initialized or user not logged in."); }
+                            const mindmapDocRef = window.doc(db, `artifacts/${appId}/users/${userId}/mindmaps`, mindmapToDeleteId);
+                            await window.deleteDoc(mindmapDocRef);
+                            console.log('Document successfully deleted!');
+                            if (currentMindmapId === mindmapToDeleteId) {
+                                mainImageContainer.classList.add('hidden');
+                                uploadInfo.classList.remove('hidden');
+                                categorizationForm.classList.add('hidden');
+                                mindmapSummarySection.classList.add('hidden');
+                                currentMindmapId = null;
+                            }
+                        } catch (error) {
+                            console.error('Error removing document: ', error);
+                            showModal('error-modal', 'Error deleting mindmap. Please try again.');
+                        }
+                    }
+                    hideModal('confirm-delete-modal');
+                });
+                
+                cancelDeleteBtn.addEventListener('click', () => {
+                    hideModal('confirm-delete-modal');
+                    mindmapToDeleteId = null;
+                });
+
+                function renderCategoryDropdown(newCategoryName = null) {
+                    const categories = new Set();
+                    Object.values(mindmapData).forEach(mindmap => {
+                        const categoryPath = mindmap.category.split('/');
+                        for(let i = 0; i < categoryPath.length; i++) {
+                             let path = categoryPath.slice(0, i + 1).join('/');
+                             categories.add(path);
+                        }
+                    });
+
+                    const sortedCategories = Array.from(categories).sort();
+                    
+                    categorySelect.innerHTML = `<option value="" disabled selected>Select a category</option>`;
+
+                    sortedCategories.forEach(cat => {
+                        const option = document.createElement('option');
+                        option.value = cat;
+                        option.textContent = cat;
+                        categorySelect.appendChild(option);
+                    });
+
+                    const newOption = document.createElement('option');
+                    newOption.value = 'new-category';
+                    newOption.textContent = 'Add New Category...';
+                    categorySelect.appendChild(newOption);
+
+                    if (newCategoryName) {
+                        categorySelect.value = newCategoryName;
+                    }
+                }
+                
+                // Add New Category button logic
+                document.getElementById('add-new-category-btn').addEventListener('click', () => {
+                    newCategoryNameInput.value = '';
+                    showModal('create-category-modal');
+                });
+
+                // Handle dropdown change event to show/hide new category input
+                categorySelect.addEventListener('change', (e) => {
+                    if (e.target.value === 'new-category') {
+                        newCategoryInputContainer.classList.remove('hidden');
+                        document.getElementById('new-category-name').focus();
+                    } else {
+                        newCategoryInputContainer.classList.add('hidden');
+                    }
+                });
+
+                // --- File Upload Logic ---
+                const uploadBox = document.getElementById('upload-box');
+                const fileInput = document.getElementById('file-input');
+
+                uploadBox.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    uploadBox.classList.add('border-brand-accent', 'scale-105');
+                });
+
+                uploadBox.addEventListener('dragleave', () => {
+                    uploadBox.classList.remove('border-brand-accent', 'scale-105');
+                });
+
+                uploadBox.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    uploadBox.classList.remove('border-brand-accent', 'scale-105');
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        handleFile(files[0]);
+                    }
+                });
+
+                fileInput.addEventListener('change', (e) => {
+                    if (e.target.files.length > 0) {
+                        handleFile(e.target.files[0]);
+                    }
+                });
+
+                function handleFile(file) {
+                    if (file.type.startsWith('image/')) {
+                        const reader = new FileReader();
+                        reader.onload = (e) => {
+                            mainImage.src = e.target.result;
+                            mainImage.alt = file.name;
+                            mainImageContainer.classList.remove('hidden');
+                            uploadInfo.classList.add('hidden');
+                            categorizationForm.classList.remove('hidden');
+                            mindmapSummarySection.classList.add('hidden');
+                            
+                            currentImageData = e.target.result.split(',')[1];
+                            currentMindmapId = null;
+
+                            document.getElementById('mindmap-form').reset();
+                            mindmapTitle.textContent = 'Mindmap Preview';
+                            mindmapDescription.textContent = 'Add details below and save this mindmap.';
+                            summaryContentDiv.innerHTML = '';
+                            memoryHacksContentDiv.innerHTML = '';
+                            summaryContentDiv.classList.remove('hidden');
+                            memoryHacksContentDiv.classList.add('hidden');
+                            
+                            getSummaryBtn.disabled = true;
+                            getHacksBtn.disabled = true;
+                            
+                            const shareBtn = document.getElementById('share-mindmap-btn');
+                            if (shareBtn) shareBtn.classList.add('hidden');
+
+                            lucide.createIcons();
+                            renderCategoryDropdown();
+                        };
+                        reader.readAsDataURL(file);
+                    } else {
+                        showModal('error-modal', 'Please upload an image file (PNG, JPG, or JPEG).');
+                    }
+                }
+
+                // Handle form submission (save to Firebase)
+                const mindmapForm = document.getElementById('mindmap-form');
+                mindmapForm.addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const mindmapName = document.getElementById('mindmap-name').value;
+                    let mindmapCategoryPath = categorySelect.value;
+                    const newCategoryName = document.getElementById('new-category-name').value;
+                    const mindmapImageSrc = mainImage.src;
+                    const mindmapDescriptionText = document.getElementById('mindmap-notes').value;
+
+                    if (mindmapCategoryPath === 'new-category' && newCategoryName) {
+                        mindmapCategoryPath = newCategoryName;
+                    } else if (!mindmapCategoryPath) {
+                        showModal('error-modal', 'Please select or create a category before saving.');
+                        return;
+                    }
+                    
+                    if (!db || !userId) {
+                        showModal('error-modal', 'Database not initialized or user not logged in.');
+                        return;
+                    }
+
+                    try {
+                        const newMindmapData = {
+                            name: mindmapName,
+                            category: mindmapCategoryPath,
+                            description: mindmapDescriptionText,
+                            image: mindmapImageSrc,
+                            summary: '',
+                            hacks: '',
+                            createdAt: new Date().toISOString()
+                        };
+                        const mindmapsRef = window.collection(db, `artifacts/${appId}/users/${userId}/mindmaps`);
+                        const docRef = await window.addDoc(mindmapsRef, newMindmapData);
+                        
+                        console.log(`Mindmap "${mindmapName}" saved with ID: `, docRef.id);
+                        
+                        categorizationForm.classList.add('hidden');
+                        mindmapSummarySection.classList.remove('hidden');
+                        
+                        const newMindmap = { id: docRef.id, ...newMindmapData };
+                        selectMindmap(newMindmap);
+                        
+                    } catch (error) {
+                        console.error("Error saving document: ", error);
+                        showModal('error-modal', 'An error occurred while saving the mindmap.');
+                    }
+                });
+
+                // --- Gemini API call for Image Understanding (Summarization) ---
+                async function getMindmapSummary() {
+                    if (!currentImageData || !currentMindmapId) {
+                        showModal('error-modal', "Please select a mindmap from the left sidebar or upload and save a new one to get a summary.");
+                        return;
+                    }
+
+                    summaryContentDiv.innerHTML = '';
+                    summarySpinner.classList.remove('hidden');
+                    getSummaryBtn.disabled = true;
+                    getSummaryBtn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i><span>Loading...</span>`;
+                    memoryHacksContentDiv.classList.add('hidden');
+                    lucide.createIcons();
+
+                    const prompt = "Analyze this mindmap. Identify the main topic and summarize the key concepts and their relationships in a clear, concise paragraph. Focus on the main ideas and don't get lost in minor details. Return the summary as plain text.";
+
+                    const payload = {
+                        contents: [{
                             role: "user",
                             parts: [
                                 { text: prompt },
                                 { inlineData: { mimeType: "image/png", data: currentImageData } }
                             ]
-                        }
-                    ],
-                };
-                const apiKey = ""
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                        }],
+                    };
+                    const apiKey = ""
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
 
-                let attempts = 0;
-                const maxAttempts = 5;
-                while (attempts < maxAttempts) {
-                    try {
-                        const response = await fetch(apiUrl, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-                        if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
-                        const result = await response.json();
-                        const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-                        
-                        if (text) {
-                            summaryContentDiv.innerHTML = text.replace(/\n/g, '<br>');
-                            summaryContentDiv.classList.remove('hidden');
+                    let attempts = 0;
+                    const maxAttempts = 5;
+                    while (attempts < maxAttempts) {
+                        try {
+                            const response = await fetch(apiUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload)
+                            });
+                            if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
+                            const result = await response.json();
+                            const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
                             
-                            // Save summary to Firestore, but only if we are the owner
-                            if (!isStandaloneView) {
-                                const mindmapDocRef = window.doc(db, `artifacts/${appId}/users/${userId}/mindmaps`, currentMindmapId);
-                                await window.updateDoc(mindmapDocRef, { summary: text });
+                            if (text) {
+                                summaryContentDiv.innerHTML = text.replace(/\n/g, '<br>');
+                                summaryContentDiv.classList.remove('hidden');
+                                
+                                if (!isStandaloneView) {
+                                    const mindmapDocRef = window.doc(db, `artifacts/${appId}/users/${userId}/mindmaps`, currentMindmapId);
+                                    await window.updateDoc(mindmapDocRef, { summary: text });
+                                }
+                            } else {
+                                summaryContentDiv.innerHTML = 'Could not generate a summary. The mindmap might be too complex or unclear.';
+                                summaryContentDiv.classList.remove('hidden');
                             }
-                        } else {
-                            summaryContentDiv.innerHTML = 'Could not generate a summary. The mindmap might be too complex or unclear.';
-                            summaryContentDiv.classList.remove('hidden');
-                        }
-                        summarySpinner.classList.add('hidden');
-                        getSummaryBtn.disabled = false;
-                        getSummaryBtn.innerHTML = `<i data-lucide="sparkles" class="w-5 h-5"></i><span>Get Summary ✨</span>`;
-                        lucide.createIcons();
-                        return;
-                    } catch (error) {
-                        attempts++;
-                        console.error(`Attempt ${attempts} failed:`, error);
-                        if (attempts < maxAttempts) {
-                            const delay = Math.pow(2, attempts) * 1000;
-                            await new Promise(resolve => setTimeout(resolve, delay));
-                        } else {
-                            summaryContentDiv.innerHTML = 'An error occurred while fetching the summary. Please try again later.';
-                            summaryContentDiv.classList.remove('hidden');
                             summarySpinner.classList.add('hidden');
                             getSummaryBtn.disabled = false;
                             getSummaryBtn.innerHTML = `<i data-lucide="sparkles" class="w-5 h-5"></i><span>Get Summary ✨</span>`;
                             lucide.createIcons();
+                            return;
+                        } catch (error) {
+                            attempts++;
+                            console.error(`Attempt ${attempts} failed:`, error);
+                            if (attempts < maxAttempts) {
+                                const delay = Math.pow(2, attempts) * 1000;
+                                await new Promise(resolve => setTimeout(resolve, delay));
+                            } else {
+                                summaryContentDiv.innerHTML = 'An error occurred while fetching the summary. Please try again later.';
+                                summaryContentDiv.classList.remove('hidden');
+                                summarySpinner.classList.add('hidden');
+                                getSummaryBtn.disabled = false;
+                                getSummaryBtn.innerHTML = `<i data-lucide="sparkles" class="w-5 h-5"></i><span>Get Summary ✨</span>`;
+                                lucide.createIcons();
+                            }
                         }
                     }
                 }
-            }
 
-            // --- Gemini API call for Image Understanding (Memory Hacks) ---
-            async function getMemoryHacks() {
-                if (!currentImageData || !currentMindmapId) {
-                    errorMessage.textContent = "Please select a mindmap from the left sidebar or upload and save a new one to get memory hacks.";
-                    showModal(errorModal);
-                    return;
-                }
+                // --- Gemini API call for Image Understanding (Memory Hacks) ---
+                async function getMemoryHacks() {
+                    if (!currentImageData || !currentMindmapId) {
+                        showModal('error-modal', "Please select a mindmap from the left sidebar or upload and save a new one to get memory hacks.");
+                        return;
+                    }
 
-                // Loading state
-                memoryHacksContentDiv.innerHTML = '';
-                hacksSpinner.classList.remove('hidden');
-                getHacksBtn.disabled = true;
-                getHacksBtn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i><span>Loading...</span>`;
-                summaryContentDiv.classList.add('hidden');
-                lucide.createIcons();
-                
-                // New concise storytelling prompt
-                const prompt = "Given this mindmap, create a single, concise, and analogous story to help a student remember the key concepts in a fun and easy way. The story should be a single paragraph and should not use lists or bullet points.";
+                    memoryHacksContentDiv.innerHTML = '';
+                    hacksSpinner.classList.remove('hidden');
+                    getHacksBtn.disabled = true;
+                    getHacksBtn.innerHTML = `<i data-lucide="loader-2" class="w-5 h-5 animate-spin"></i><span>Loading...</span>`;
+                    summaryContentDiv.classList.add('hidden');
+                    lucide.createIcons();
+                    
+                    const prompt = "Given this mindmap, create a single, concise, and analogous story to help a student remember the key concepts in a fun and easy way. The story should be a single paragraph and should not use lists or bullet points.";
 
-                let chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
-                const payload = {
-                    contents: [
-                        {
+                    const payload = {
+                        contents: [{
                             role: "user",
                             parts: [
                                 { text: prompt },
                                 { inlineData: { mimeType: "image/png", data: currentImageData } }
                             ]
-                        }
-                    ],
-                };
-                const apiKey = ""
-                const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-            
-                let attempts = 0;
-                const maxAttempts = 5;
-                while (attempts < maxAttempts) {
-                    try {
-                        const response = await fetch(apiUrl, {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify(payload)
-                        });
-                        if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
-                        const result = await response.json();
-                        const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
-                        
-                        if (text) {
-                            memoryHacksContentDiv.innerHTML = text.replace(/\n/g, '<br>');
-                            memoryHacksContentDiv.classList.remove('hidden');
+                        }],
+                    };
+                    const apiKey = ""
+                    const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+                
+                    let attempts = 0;
+                    const maxAttempts = 5;
+                    while (attempts < maxAttempts) {
+                        try {
+                            const response = await fetch(apiUrl, {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify(payload)
+                            });
+                            if (!response.ok) { throw new Error(`HTTP error! status: ${response.status}`); }
+                            const result = await response.json();
+                            const text = result?.candidates?.[0]?.content?.parts?.[0]?.text;
                             
-                            // Save hacks to Firestore, but only if we are the owner
-                            if (!isStandaloneView) {
-                                const mindmapDocRef = window.doc(db, `artifacts/${appId}/users/${userId}/mindmaps`, currentMindmapId);
-                                await window.updateDoc(mindmapDocRef, { hacks: text });
+                            if (text) {
+                                memoryHacksContentDiv.innerHTML = text.replace(/\n/g, '<br>');
+                                memoryHacksContentDiv.classList.remove('hidden');
+                                
+                                if (!isStandaloneView) {
+                                    const mindmapDocRef = window.doc(db, `artifacts/${appId}/users/${userId}/mindmaps`, currentMindmapId);
+                                    await window.updateDoc(mindmapDocRef, { hacks: text });
+                                }
+                            } else {
+                                memoryHacksContentDiv.innerHTML = 'Could not generate memory hacks.';
+                                memoryHacksContentDiv.classList.remove('hidden');
                             }
-                        } else {
-                            memoryHacksContentDiv.innerHTML = 'Could not generate memory hacks.';
-                            memoryHacksContentDiv.classList.remove('hidden');
-                        }
-                        hacksSpinner.classList.add('hidden');
-                        getHacksBtn.disabled = false;
-                        getHacksBtn.innerHTML = `<i data-lucide="brain" class="w-5 h-5"></i><span>Get Memory Hacks ✨</span>`;
-                        lucide.createIcons();
-                        return;
-                    } catch (error) {
-                        attempts++;
-                        console.error(`Attempt ${attempts} failed:`, error);
-                        if (attempts < maxAttempts) {
-                            const delay = Math.pow(2, attempts) * 1000;
-                            await new Promise(resolve => setTimeout(resolve, delay));
-                        } else {
-                            memoryHacksContentDiv.innerHTML = 'An error occurred while fetching the memory hacks. Please try again later.';
-                            memoryHacksContentDiv.classList.remove('hidden');
                             hacksSpinner.classList.add('hidden');
                             getHacksBtn.disabled = false;
                             getHacksBtn.innerHTML = `<i data-lucide="brain" class="w-5 h-5"></i><span>Get Memory Hacks ✨</span>`;
                             lucide.createIcons();
+                            return;
+                        } catch (error) {
+                            attempts++;
+                            console.error(`Attempt ${attempts} failed:`, error);
+                            if (attempts < maxAttempts) {
+                                const delay = Math.pow(2, attempts) * 1000;
+                                await new Promise(resolve => setTimeout(resolve, delay));
+                            } else {
+                                memoryHacksContentDiv.innerHTML = 'An error occurred while fetching the memory hacks. Please try again later.';
+                                memoryHacksContentDiv.classList.remove('hidden');
+                                hacksSpinner.classList.add('hidden');
+                                getHacksBtn.disabled = false;
+                                getHacksBtn.innerHTML = `<i data-lucide="brain" class="w-5 h-5"></i><span>Get Memory Hacks ✨</span>`;
+                                lucide.createIcons();
+                            }
                         }
                     }
                 }
-            }
 
-            // --- Share button logic ---
-            const shareMindmapBtn = document.getElementById('share-mindmap-btn');
-            if (shareMindmapBtn) {
-                 shareMindmapBtn.addEventListener('click', () => {
-                    if (currentMindmapId) {
-                        const shareUrl = `${window.location.origin}${window.location.pathname}?id=${currentMindmapId}`;
-                        
-                        // Use the clipboard API if available
-                        if (navigator.clipboard) {
-                            navigator.clipboard.writeText(shareUrl).then(() => {
-                                errorMessage.textContent = "Link copied to clipboard!";
-                                showModal(errorModal);
-                            }).catch(err => {
-                                console.error('Could not copy text: ', err);
+                // --- Share button logic ---
+                const shareMindmapBtn = document.getElementById('share-mindmap-btn');
+                if (shareMindmapBtn) {
+                    shareMindmapBtn.addEventListener('click', () => {
+                        if (currentMindmapId) {
+                            const shareUrl = `${window.location.origin}${window.location.pathname}?id=${currentMindmapId}`;
+                            
+                            if (navigator.clipboard) {
+                                navigator.clipboard.writeText(shareUrl).then(() => {
+                                    showModal('error-modal', "Link copied to clipboard!");
+                                }).catch(err => {
+                                    console.error('Could not copy text: ', err);
+                                    fallbackCopy(shareUrl);
+                                });
+                            } else {
                                 fallbackCopy(shareUrl);
-                            });
+                            }
                         } else {
-                            // Fallback for older browsers
-                            fallbackCopy(shareUrl);
+                            showModal('error-modal', "Please select a mindmap to share.");
                         }
-                    } else {
-                        errorMessage.textContent = "Please select a mindmap to share.";
-                        showModal(errorModal);
-                    }
-                 });
-            }
-
-            function fallbackCopy(text) {
-                const textarea = document.createElement('textarea');
-                textarea.value = text;
-                document.body.appendChild(textarea);
-                textarea.select();
-                try {
-                    document.execCommand('copy');
-                    errorMessage.textContent = "Link copied to clipboard!";
-                    showModal(errorModal);
-                } catch (err) {
-                    errorMessage.textContent = "Could not copy link. Please copy it manually.";
-                    showModal(errorModal);
+                    });
                 }
-                document.body.removeChild(textarea);
-            }
 
-            // Add event listeners for Gemini buttons, passing element references
-            if (getSummaryBtn) {
-                getSummaryBtn.addEventListener('click', getMindmapSummary);
-            }
+                function fallbackCopy(text) {
+                    const textarea = document.createElement('textarea');
+                    textarea.value = text;
+                    document.body.appendChild(textarea);
+                    textarea.select();
+                    try {
+                        document.execCommand('copy');
+                        showModal('error-modal', "Link copied to clipboard!");
+                    } catch (err) {
+                        showModal('error-modal', "Could not copy link. Please copy it manually.");
+                    }
+                    document.body.removeChild(textarea);
+                }
 
-            if (getHacksBtn) {
-                getHacksBtn.addEventListener('click', getMemoryHacks);
-            }
+                // Add event listeners for Gemini buttons
+                if (getSummaryBtn) { getSummaryBtn.addEventListener('click', getMindmapSummary); }
+                if (getHacksBtn) { getHacksBtn.addEventListener('click', getMemoryHacks); }
 
-            // Initial UI setup
-            lucide.createIcons();
+                lucide.createIcons();
+
+            } catch (e) {
+                console.error("Initial script execution failed:", e);
+                showModal('error-modal', `An critical error occurred during setup: ${e.message}`);
+            }
         });
     </script>
 </head>
@@ -865,18 +821,6 @@
         </div>
     </div>
     
-    <div id="add-sub-category-modal" class="modal-backdrop hidden">
-        <div class="modal-content w-full max-w-sm">
-            <h3 class="text-2xl font-bold mb-4">Create New Sub-category</h3>
-            <p class="mb-2">Parent category: <span id="sub-category-parent-name" class="font-semibold"></span></p>
-            <input id="new-sub-category-name-modal" type="text" placeholder="Enter sub-category name" class="w-full p-2 mb-4 rounded-md border-2 border-brand-primary/10 focus:ring-brand-accent focus:border-brand-accent bg-brand-background">
-            <div class="flex justify-end gap-2">
-                <button id="cancel-new-sub-category" class="px-4 py-2 rounded-lg text-brand-primary/80 hover:bg-brand-background/50">Cancel</button>
-                <button id="save-new-sub-category" class="px-4 py-2 rounded-lg bg-brand-secondary text-brand-primary font-bold btn-shadow">Create</button>
-            </div>
-        </div>
-    </div>
-
     <!-- General Error/Info Modal -->
     <div id="error-modal" class="modal-backdrop hidden">
         <div class="modal-content w-full max-w-sm">
